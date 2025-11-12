@@ -24,10 +24,13 @@ def text_node_to_html_node(text_node):
     elif text_node.text_type == TextType.IMAGE:
         return LeafNode("img", "", {"src": text_node.url, "alt": text_node.text})
 
+    elif text_node.text_type == TextType.CROSSED:
+        return LeafNode("s", text_node.text)
+
     raise ValueError("Invalid TextType")
 
 
-#Create TextNodes from raw markdown strings
+# Create TextNodes from raw markdown strings
 def split_nodes_delimiter(old_nodes, delimiter, text_type):
     new_nodes = []
     for node in old_nodes:
@@ -49,7 +52,7 @@ def split_nodes_delimiter(old_nodes, delimiter, text_type):
     return new_nodes
 
 
-#Convert raw markdown to alt and href touples for images and links
+# Convert raw markdown to alt and href touples for images and links
 def extract_markdown_images(text):
     images = re.findall(r"!\[(.*?)\]\((.*?)\)", text)
     return images
@@ -58,9 +61,8 @@ def extract_markdown_images(text):
 def extract_markdown_links(text):
     images = re.findall(r"\[(.*?)\]\((.*?)\)", text)
     return images
-#Split raw markdown text into TextNodes based on images and links
 
-
+# Split raw markdown text into TextNodes based on images and links
 def split_nodes_image(old_nodes):
     new_nodes = []
     for node in old_nodes:
@@ -69,17 +71,16 @@ def split_nodes_image(old_nodes):
         else:
             current_text = node.text
             images = extract_markdown_images(current_text)
-            
             for alt_text, url in images:
                 parts = current_text.split(f"![{alt_text}]({url})", 1)
                 if parts[0]:
                     new_nodes.append(TextNode(parts[0], TextType.TEXT))
                 new_nodes.append(TextNode(alt_text, TextType.IMAGE, url))
                 current_text = parts[1]
-            
             if current_text:
                 new_nodes.append(TextNode(current_text, TextType.TEXT))
     return new_nodes
+
 
 def split_nodes_link(old_nodes):
     new_nodes = []
@@ -89,17 +90,16 @@ def split_nodes_link(old_nodes):
         else:
             current_text = node.text
             links = extract_markdown_links(current_text)
-            
             for link_text, url in links:
                 parts = current_text.split(f"[{link_text}]({url})", 1)
                 if parts[0]:
                     new_nodes.append(TextNode(parts[0], TextType.TEXT))
                 new_nodes.append(TextNode(link_text, TextType.LINK, url))
                 current_text = parts[1]
-            
             if current_text:
                 new_nodes.append(TextNode(current_text, TextType.TEXT))
     return new_nodes
+
 
 def text_to_textnodes(text):
     input = [TextNode(text, TextType.TEXT)]
@@ -108,7 +108,8 @@ def text_to_textnodes(text):
     image = split_nodes_image(code)
     link = split_nodes_link(image)
     italic = split_nodes_delimiter(link, "_", TextType.ITALIC)
-    return italic
+    crossed = split_nodes_delimiter(italic, "~~", TextType.CROSSED)
+    return crossed
 
 
 def markdown_to_blocks(markdown):
@@ -141,20 +142,49 @@ def block_to_blocktype(block):
     return BlockType.PARAGRAPH
 
 
+def process_shortcodes(markdown):
+    pattern = r'{{<\s*(\w+)\s*>}}(.*?){{</\s*\1\s*>}}'
+    matches = re.findall(pattern, markdown, re.DOTALL)
+    processed = markdown
+    
+    for class_name, content in matches:
+        original = f'{{{{< {class_name} >}}}}{content}{{{{</ {class_name} >}}}}'
+        replacement = f'<div class="{class_name}">\n{content.strip()}\n</div>'
+        processed = processed.replace(original, replacement)
+    
+    return processed
+
+
 def markdown_to_html_node(markdown):
+    markdown = process_shortcodes(markdown)
     blocks = markdown_to_blocks(markdown)
     children = []
     for block in blocks:
+        if block.startswith('<div class='):
+            div_match = re.match(r'<div class="(\w+)">(.*?)</div>', block, 
+                                 re.DOTALL)
+            if div_match:
+                class_name, content = div_match.groups()
+                content_node = markdown_to_html_node(content.strip())
+                children.append(ParentNode("div", content_node.children, 
+                                         {"class": class_name}))
+                continue
+        
         blocktype = block_to_blocktype(block)
         if blocktype == BlockType.HEADING:
             level = block.count("#", 0, 6)
             text = block.lstrip("# ").strip()
             textnodes = text_to_textnodes(text)
             htmlnodes = [text_node_to_html_node(node) for node in textnodes]
-            children.append(ParentNode(f"h{level}", htmlnodes))
+            if level == 1:
+                children.append(ParentNode("h1", htmlnodes, 
+                                         {"class": "post-content-title"}))
+            else:
+                children.append(ParentNode(f"h{level}", htmlnodes))
         elif blocktype == BlockType.CODE:
             text = block.strip("```").strip()
-            children.append(ParentNode("pre", [ParentNode("code", [LeafNode(None, text)])]))
+            children.append(ParentNode("pre", [ParentNode("code", 
+                                              [LeafNode(None, text)])]))
         elif blocktype == BlockType.QUOTE:
             text = "\n".join(line.lstrip("> ") for line in block.split("\n"))
             textnodes = text_to_textnodes(text)
@@ -175,10 +205,13 @@ def markdown_to_html_node(markdown):
             children.append(ParentNode("p", htmlnodes))
     return ParentNode("div", children)
 
+
 def extract_title(markdown):
     target = "# "
     if target in markdown:
         for line in markdown.split("\n"):
             if line[:2] == target:
                return line.lstrip(target)
-    raise Exception("No title")
+            if line.startswith("<!-- # ") and line.endswith(" -->"):
+                return line[7:-4]
+    raise Exception("no title")
